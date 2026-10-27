@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Imported automatically after each project's settings: vcpkg's build steps (install
+     libzip, add its include/lib folders, link it). -->
+<Project>
+  <Import Project="$(VcpkgRoot)scripts\buildsystems\msbuild\vcpkg.targets"
+          Condition="Exists('$(VcpkgRoot)scripts\buildsystems\msbuild\vcpkg.targets')" />
+
+  <Target Name="ZipCheckVcpkg" BeforeTargets="PrepareForBuild"
+          Condition="!Exists('$(VcpkgRoot)scripts\buildsystems\msbuild\vcpkg.targets')">
+    <Error Text="vcpkg was not found at '$(VcpkgRoot)'. Install the 'vcpkg package manager' component in the Visual Studio Installer, or set VCPKG_ROOT to a vcpkg clone." />
+  </Target>
+</Project>

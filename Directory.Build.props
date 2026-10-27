@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Imported automatically by every .vcxproj in this folder tree, before the project's own settings.
+     Wires up vcpkg (manifest mode) so libzip from vcpkg.json is built and linked on the first build. -->
+<Project>
+  <PropertyGroup>
+    <!-- vcpkg: VCPKG_ROOT if set, otherwise the copy that ships with Visual Studio 2022
+         (Visual Studio Installer component "vcpkg package manager"). -->
+    <VcpkgRoot Condition="'$(VcpkgRoot)' == '' and '$(VCPKG_ROOT)' != ''">$(VCPKG_ROOT)</VcpkgRoot>
+    <VcpkgRoot Condition="'$(VcpkgRoot)' == ''">$(VsInstallRoot)\VC\vcpkg</VcpkgRoot>
+    <VcpkgRoot>$([MSBuild]::EnsureTrailingSlash('$(VcpkgRoot)'))</VcpkgRoot>
+
+    <!-- Manifest mode: install what vcpkg.json lists into vcpkg_installed\ next to it. -->
+    <VcpkgEnableManifest>true</VcpkgEnableManifest>
+    <VcpkgManifestRoot>$(MSBuildThisFileDirectory)</VcpkgManifestRoot>
+
+    <!-- Static libraries (x64-windows-static / x86-windows-static) and the static CRT, so
+         ZipAppMFC.exe is a single file with no libzip/zlib DLLs or VC++ redistributable. -->
+    <VcpkgUseStatic>true</VcpkgUseStatic>
+
+    <!-- vcpkg's post-build "applocal" step copies dependency DLLs next to each exe using
+         pwsh.exe (PowerShell 7). With static linking there are no DLLs to copy, and on
+         machines without PowerShell 7 it prints "'pwsh.exe' is not recognized", so turn it off. -->
+    <VcpkgApplocalDeps>false</VcpkgApplocalDeps>
+  </PropertyGroup>
+
+  <Import Project="$(VcpkgRoot)scripts\buildsystems\msbuild\vcpkg.props"
+          Condition="Exists('$(VcpkgRoot)scripts\buildsystems\msbuild\vcpkg.props')" />
+</Project>

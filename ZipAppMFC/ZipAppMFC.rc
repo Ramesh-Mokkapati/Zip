@@ -1,0 +1,81 @@
+// Resource script for ZipAppMFC
+//
+#include "resource.h"
+
+#define APSTUDIO_READONLY_SYMBOLS
+#include "afxres.h"
+#include "verrsrc.h"
+#undef APSTUDIO_READONLY_SYMBOLS
+
+LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
+
+IDR_MAINFRAME           ICON                    "res\\ZipAppMFC.ico"
+
+// Main window. WS_EX_ACCEPTFILES lets files be dragged onto it from Explorer.
+IDD_ZIPAPPMFC_DIALOG DIALOGEX 0, 0, 380, 312
+STYLE DS_SETFONT | DS_FIXEDSYS | DS_CENTER | WS_MINIMIZEBOX | WS_POPUP | WS_VISIBLE | WS_CAPTION | WS_SYSMENU
+EXSTYLE WS_EX_APPWINDOW | WS_EX_ACCEPTFILES
+CAPTION "ZIP / TAR Archive Creator"
+FONT 9, "Segoe UI", 400, 0, 0x0
+BEGIN
+    LTEXT           "&Files to compress (drag files here, or use Add Files):",IDC_FILES_LABEL,7,7,300,9
+    LISTBOX         IDC_LIST_FILES,7,18,300,112,LBS_EXTENDEDSEL | LBS_NOINTEGRALHEIGHT | LBS_HASSTRINGS | WS_VSCROLL | WS_HSCROLL | WS_BORDER | WS_TABSTOP
+    PUSHBUTTON      "&Add Files...",IDC_BTN_BROWSE,313,18,60,14
+    PUSHBUTTON      "&Remove",IDC_BTN_REMOVE,313,36,60,14
+    PUSHBUTTON      "C&lear",IDC_BTN_CLEAR,313,54,60,14
+
+    LTEXT           "Archive &format:",IDC_STATIC,7,138,120,9
+    COMBOBOX        IDC_COMBO_FORMAT,7,149,180,100,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+
+    LTEXT           "&Save archive as:",IDC_STATIC,7,167,120,9
+    EDITTEXT        IDC_EDIT_OUTPUT,7,178,300,14,ES_AUTOHSCROLL
+    PUSHBUTTON      "Bro&wse...",IDC_BTN_OUTPUT,313,178,60,14
+
+    LTEXT           "&Password (leave empty for no encryption):",IDC_STATIC,7,198,180,9
+    EDITTEXT        IDC_EDIT_PASS,7,209,180,14,ES_PASSWORD | ES_AUTOHSCROLL
+    LTEXT           "C&onfirm password:",IDC_STATIC,193,198,114,9
+    EDITTEXT        IDC_EDIT_PASS_CONFIRM,193,209,114,14,ES_PASSWORD | ES_AUTOHSCROLL
+    // Text set at run time for the chosen format (see UpdateFormatUi).
+    LTEXT           "",IDC_ENCRYPTION_NOTE,7,227,366,18
+
+    CONTROL         "",IDC_PROGRESS,"msctls_progress32",PBS_SMOOTH | WS_BORDER,7,250,366,10
+    LTEXT           "",IDC_STATUS,7,264,366,18,SS_NOPREFIX
+
+    DEFPUSHBUTTON   "&Create Archive",IDC_BTN_ZIP,7,291,70,15
+    PUSHBUTTON      "S&top",IDC_BTN_STOP,81,291,60,15
+    PUSHBUTTON      "Close",IDCANCEL,313,291,60,15
+END
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION 1,1,0,0
+ PRODUCTVERSION 1,1,0,0
+ FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+#ifdef _DEBUG
+ FILEFLAGS VS_FF_DEBUG
+#else
+ FILEFLAGS 0x0L
+#endif
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+ FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "FileDescription", "ZIP / TAR Archive Creator"
+            VALUE "FileVersion", "1.1.0.0"
+            VALUE "InternalName", "ZipAppMFC.exe"
+            VALUE "OriginalFilename", "ZipAppMFC.exe"
+            VALUE "ProductName", "ZIP / TAR Archive Creator"
+            VALUE "ProductVersion", "1.1.0.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END
+
+// MFC framework resources (static link)
+#include "afxres.rc"

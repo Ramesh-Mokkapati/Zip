@@ -1,0 +1,136 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.configuration }} | ${{ matrix.platform }}
+    # windows-2022 ships Visual Studio 2022 (v143 + MFC) and 7-Zip, which the tests use to
+    # check that the encrypted archives open in a third-party tool.
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [Debug, Release]
+        platform: [x64, x86]
+        include:
+          # The solution platform x86 builds the projects' Win32 platform, which is the folder name under bin\.
+          - platform: x64
+            outdir: x64
+          - platform: x86
+            outdir: Win32
+
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+      # Cache vcpkg's built libzip/libarchive/zlib/bzip2/liblzma between runs.
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/vcpkg-binary-cache
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # Use the exact registry commit pinned in vcpkg.json (builtin-baseline).
+      - name: Set up vcpkg
+        shell: pwsh
+        run: |
+          $baseline = (Get-Content vcpkg.json -Raw | ConvertFrom-Json).'builtin-baseline'
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg.git "$env:VCPKG_ROOT"
+          git -C "$env:VCPKG_ROOT" checkout $baseline
+          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+          New-Item -ItemType Directory -Force "$env:VCPKG_DEFAULT_BINARY_CACHE" | Out-Null
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/vcpkg-binary-cache
+          key: vcpkg-${{ matrix.platform }}-${{ hashFiles('vcpkg.json') }}
+
+      - uses: microsoft/setup-msbuild@v3
+
+      - name: Build
+        run: msbuild ZipAppSolution.sln -m -nologo -verbosity:minimal -p:Configuration=${{ matrix.configuration }} -p:Platform=${{ matrix.platform }}
+
+      # ZIP and TAR engine tests; archives are cross-checked with 7-Zip and Windows tar.exe.
+      - name: Unit tests
+        shell: pwsh
+        run: |
+          & "bin\${{ matrix.outdir }}\${{ matrix.configuration }}\ZipEngineTests.exe"
+          if ($LASTEXITCODE -ne 0) { throw "ZipEngineTests failed with exit code $LASTEXITCODE" }
+
+      - name: Command-line tests
+        shell: powershell
+        run: |
+          powershell -ExecutionPolicy Bypass -File ZipCli\CliTest.ps1 -Configuration ${{ matrix.configuration }} -Platform ${{ matrix.platform }}
+          if ($LASTEXITCODE -ne 0) { throw "CliTest.ps1 failed with exit code $LASTEXITCODE" }
+
+      - name: Upload binaries
+        if: matrix.configuration == 'Release'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ZipAppMFC-${{ matrix.platform }}
+          path: |
+            bin/${{ matrix.outdir }}/${{ matrix.configuration }}/ZipAppMFC.exe
+            bin/${{ matrix.outdir }}/${{ matrix.configuration }}/ZipAppMFC.pdb
+            bin/${{ matrix.outdir }}/${{ matrix.configuration }}/zipcli.exe
+            bin/${{ matrix.outdir }}/${{ matrix.configuration }}/zipcli.pdb
+          if-no-files-found: error
+
+  release:
+    name: Release
+    # Every push to main whose builds and tests all pass gets its own tag and GitHub release.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    # Pinned rather than ubuntu-latest so the image doesn't change under us (the job only needs zip and gh).
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      # Bump the major/minor here (kept in step with the 1.1 version resource and `zipcli --version`);
+      # the patch number is the workflow run number.
+      VERSION: v1.1.${{ github.run_number }}
+
+    steps:
+      # Only the README is needed from the repository: it documents the app and zipcli's options.
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: README.md
+          sparse-checkout-cone-mode: false
+
+      - name: Download binaries
+        uses: actions/download-artifact@v8
+        with:
+          pattern: ZipAppMFC-*
+          path: artifacts
+
+      # One zip per platform: ZipAppMFC.exe and zipcli.exe (everything linked statically, so no DLLs
+      # or redistributable are needed), their PDBs for crash analysis, and the README.
+      - name: Zip binaries
+        run: |
+          mkdir release
+          for platform in x64 x86; do
+            cp README.md "artifacts/ZipAppMFC-$platform/"
+            (cd "artifacts/ZipAppMFC-$platform" && zip -r "$GITHUB_WORKSPACE/release/ZipApp-$platform.zip" .)
+          done
+
+      # gh creates the tag on the pushed commit and generates notes from the commits since the
+      # previous release.
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "$VERSION" release/*.zip
+          --repo "$GITHUB_REPOSITORY"
+          --target "$GITHUB_SHA"
+          --title "ZIP / TAR Archive Creator $VERSION"
+          --generate-notes
+          --latest

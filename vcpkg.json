@@ -1,0 +1,19 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "zip-app",
+  "version": "1.1.0",
+  "description": "ZIP (libzip, AES via Windows CNG) and TAR/.tar.gz/.tar.bz2/.tar.xz (libarchive) creator. No OpenSSL needed.",
+  "dependencies": [
+    {
+      "name": "libzip",
+      "default-features": false,
+      "features": [ "default-aes" ]
+    },
+    {
+      "name": "libarchive",
+      "default-features": false,
+      "features": [ "bzip2", "lzma" ]
+    }
+  ],
+  "builtin-baseline": "5363acb796e576328288fae60c25304e227e9839"
+}

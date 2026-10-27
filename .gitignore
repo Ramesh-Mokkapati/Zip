@@ -1,0 +1,66 @@
+# Build output (OutDir / IntDir in ZipCommon.props)
+bin/
+obj/
+
+# Visual Studio's default output folders, if a project is ever built without ZipCommon.props
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+Win32/
+ARM64/
+
+# vcpkg manifest-mode install folder (libzip, libarchive, zlib, bzip2, liblzma; rebuilt from vcpkg.json)
+vcpkg_installed/
+
+# Visual Studio user state and caches
+.vs/
+*.user
+*.suo
+*.aps
+*.VC.db
+*.VC.opendb
+ipch/
+enc_temp_folder/
+
+# Compiler / linker intermediates and binaries
+*.obj
+*.pch
+*.pdb
+*.ipdb
+*.iobj
+*.idb
+*.ilk
+*.res
+*.tlog
+*.lastbuildstate
+*.log
+*.exp
+*.lib
+*.exe
+*.dll
+
+# Archives created while testing the app or zipcli
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.tar.bz2
+*.tbz2
+*.tbz
+*.tar.xz
+*.txz
+
+# Temporary files left next to the output if the app or zipcli is killed mid-write
+# (TarCompressor: tar*.tmp from GetTempFileName; libzip: <archive>.zip.<random>)
+*.tmp
+*.zip.*
+
+# Debugging artifacts
+*.dmp
+
+# OS / editor noise
+Thumbs.db
+Desktop.ini
+.DS_Store
+.vscode/
