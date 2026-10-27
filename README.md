@@ -99,6 +99,7 @@ Also available:
 - **Encrypted ZIP:** use 7-Zip, WinRAR or WinZip. Windows Explorer can't open AES-encrypted ZIPs.
 - **TAR, TAR.GZ, TAR.BZ2, TAR.XZ:** use 7-Zip, WinRAR, or `tar -xf` (built into Windows 10 and later, macOS and Linux).
 - **Windows' own `tar.exe` and file names:** it can only handle names representable in the system's ANSI code page. On a Western-European Windows, for example, it skips a file named in Chinese, and crashes if asked to create such an archive itself. Archives from this tool store such names correctly, and 7-Zip and GNU tar extract them.
+- **Windows' own `tar.exe` and `.tar.xz`:** current Windows 11 builds include xz support, but Windows 10 and Windows Server 2019/2022 ship an older `tar.exe` without it. On those systems, use 7-Zip to open `.tar.xz` files. `tar --version` shows the support: `liblzma/` in the output means `.tar.xz` works. If you're producing archives for such machines, `.tar.gz` is the safe choice. The tests check this the same way, and skip `tar.exe` checks for formats the installed version can't decompress.
 
 ## Build
 

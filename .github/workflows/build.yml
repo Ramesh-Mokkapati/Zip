@@ -50,7 +50,8 @@ jobs:
           & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
           New-Item -ItemType Directory -Force "$env:VCPKG_DEFAULT_BINARY_CACHE" | Out-Null
 
-      - uses: actions/cache@v4
+      # v6 runs on Node 24 (v4 targeted the deprecated Node 20).
+      - uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}/vcpkg-binary-cache
           key: vcpkg-${{ matrix.platform }}-${{ hashFiles('vcpkg.json') }}

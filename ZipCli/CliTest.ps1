@@ -15,6 +15,29 @@ $platformDir = if ($Platform -eq 'x86') { 'Win32' } else { 'x64' }
 $cli = (Resolve-Path (Join-Path $PSScriptRoot "..\bin\$platformDir\$Configuration\zipcli.exe")).Path
 $sevenZip = @('C:\Program Files\7-Zip\7z.exe', 'C:\Program Files (x86)\7-Zip\7z.exe') | Where-Object { Test-Path $_ } | Select-Object -First 1
 $tarExe = Join-Path $env:WINDIR 'System32\tar.exe'
+# `tar --version` lists the decompressors this tar.exe was built with. Windows 10 and Windows
+# Server 2019/2022 ship an older bsdtar without liblzma; given a .tar.xz it tries to run an
+# external "xz" program and can hang, so formats it cannot decompress are skipped.
+$tarVersion = if (Test-Path $tarExe) { (& $tarExe --version | Select-Object -First 1) } else { '' }
+Write-Host "Windows tar.exe: $tarVersion"
+function Test-TarSupports([string] $ext) {
+    switch -Regex ($ext) {
+        '^(tar\.gz|tgz)$'   { return $tarVersion -match 'zlib/' }
+        '^(tar\.bz2|tbz2)$' { return $tarVersion -match 'bz2lib/' }
+        '^(tar\.xz|txz)$'   { return $tarVersion -match 'liblzma/' }
+        default             { return $tarVersion -ne '' }
+    }
+}
+
+# Runs tar.exe with a 60 s limit (a hung tar.exe is killed); returns its exit code, or -2 on timeout.
+function Invoke-Tar([string[]] $TarArgs) {
+    $p = Start-Process -FilePath $tarExe -ArgumentList $TarArgs -NoNewWindow -PassThru
+    # Windows PowerShell 5.1 only keeps ExitCode after WaitForExit(timeout) if the process
+    # handle was opened first; reading .Handle does that.
+    $null = $p.Handle
+    if (-not $p.WaitForExit(60000)) { $p.Kill(); return -2 }
+    return $p.ExitCode
+}
 
 $work = Join-Path ([IO.Path]::GetTempPath()) ("ZipCliTest_" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory $work | Out-Null
@@ -75,13 +98,22 @@ try {
         Check ($r.Code -eq 0) "create logs.$ext"
         $r = Invoke-Cli @('list', "logs.$ext")
         Check ($r.Code -eq 0 -and $r.Out -match 'a\.log' -and $r.Out -match '2 entries') "list logs.$ext"
-        $dest = "x_$($ext.Replace('.', '_'))"; New-Item -ItemType Directory $dest | Out-Null
-        & $tarExe -xf "logs.$ext" -C $dest
-        Check ($LASTEXITCODE -eq 0 -and (Get-Content "$dest\b.log" -Raw) -eq 'bravo') "Windows tar.exe extracts logs.$ext"
+        if (Test-TarSupports $ext) {
+            $dest = "x_$($ext.Replace('.', '_'))"; New-Item -ItemType Directory $dest | Out-Null
+            $code = Invoke-Tar @('-xf', "logs.$ext", '-C', $dest)
+            Check ($code -eq 0 -and (Get-Content "$dest\b.log" -Raw) -eq 'bravo') "Windows tar.exe extracts logs.$ext (exit $code)"
+        } else {
+            Write-Host "  skip Windows tar.exe cannot decompress .$ext on this Windows version"
+        }
+        if ($sevenZip -and $ext -ne 'tar') {
+            & $sevenZip t "logs.$ext" -bso0 -bsp0;               Check ($LASTEXITCODE -eq 0) "7-Zip verifies logs.$ext"
+        }
     }
     $r = Invoke-Cli @('create', '--format', 'tar.xz', 'named.zip', 'c.txt')
     Check ($r.Code -eq 0 -and $r.Out -match 'TAR\.XZ') '--format overrides the extension'
-    & $tarExe -tf named.zip | Out-Null;                          Check ($LASTEXITCODE -eq 0) '...and the file really is a tar.xz'
+    # xz streams start with the magic bytes FD 37 7A 58 5A 00 ("\xFD7zXZ\0").
+    $magic = ([IO.File]::ReadAllBytes((Join-Path $work 'named.zip')) | Select-Object -First 6 | ForEach-Object { $_.ToString('X2') }) -join ' '
+    Check ($magic -eq 'FD 37 7A 58 5A 00') "...and the file really is xz-compressed ($magic)"
 }
 finally {
     Pop-Location

@@ -263,7 +263,8 @@ namespace
         return std::wstring();
     }
 
-    // Runs a command line and returns its exit code (-1 if it could not start).
+    // Runs a command line and returns its exit code: -1 if it could not start, -2 if it did not
+    // finish within 60 s (it is then killed, so a hung tool cannot outlive the test run).
     int Run(std::wstring cmd)
     {
         STARTUPINFOW si = { sizeof(si) };
@@ -273,12 +274,59 @@ namespace
             return -1;
         }
 
-        WaitForSingleObject(pi.hProcess, 60000);
-        DWORD code = 0;
-        GetExitCodeProcess(pi.hProcess, &code);
+        int result = -2;
+        if (WaitForSingleObject(pi.hProcess, 60000) == WAIT_OBJECT_0)
+        {
+            DWORD code = 0;
+            GetExitCodeProcess(pi.hProcess, &code);
+            result = static_cast<int>(code);
+        }
+        else
+        {
+            TerminateProcess(pi.hProcess, 1);
+            WaitForSingleObject(pi.hProcess, 5000);
+        }
+
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
-        return static_cast<int>(code);
+        return result;
+    }
+
+    // Runs a command line and returns what it wrote to stdout (empty if it could not run).
+    std::string RunCapture(std::wstring cmd)
+    {
+        SECURITY_ATTRIBUTES sa = { sizeof(sa), nullptr, TRUE };
+        HANDLE readPipe = nullptr, writePipe = nullptr;
+        if (!CreatePipe(&readPipe, &writePipe, &sa, 0))
+        {
+            return std::string();
+        }
+        SetHandleInformation(readPipe, HANDLE_FLAG_INHERIT, 0);
+
+        STARTUPINFOW si = { sizeof(si) };
+        si.dwFlags = STARTF_USESTDHANDLES;
+        si.hStdOutput = writePipe;
+        si.hStdError = writePipe;
+        PROCESS_INFORMATION pi = {};
+        const BOOL started = CreateProcessW(nullptr, &cmd[0], nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+        CloseHandle(writePipe);   // so ReadFile sees end-of-file when the child exits
+
+        std::string output;
+        if (started)
+        {
+            char buf[4096];
+            DWORD got = 0;
+            while (::ReadFile(readPipe, buf, sizeof(buf), &got, nullptr) && got > 0)
+            {
+                output.append(buf, got);
+            }
+            WaitForSingleObject(pi.hProcess, 10000);
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+        }
+
+        CloseHandle(readPipe);
+        return output;
     }
 
     // Runs `7z t` (test integrity, which decrypts and checks every CRC). Returns 7-Zip's exit code.
@@ -325,6 +373,21 @@ namespace
         GetSystemDirectoryW(sys, MAX_PATH);
         const std::wstring exe = std::wstring(sys) + L"\\tar.exe";
         return GetFileAttributesW(exe.c_str()) == INVALID_FILE_ATTRIBUTES ? std::string() : Utf8(exe);
+    }
+
+    // Whether this tar.exe can decompress the format. `tar --version` lists the libraries it
+    // was built with, e.g. "bsdtar 3.8.9 - libarchive 3.8.9 zlib/... liblzma/... bz2lib/...".
+    // Windows 10 and Windows Server 2019/2022 ship an older bsdtar without liblzma; given a
+    // .tar.xz it tries to run an external "xz" program and can hang, so such checks are skipped.
+    bool TarExeSupports(const std::string& versionText, ZipEngine::ArchiveFormat format)
+    {
+        switch (format)
+        {
+        case ZipEngine::ArchiveFormat::TarGz:  return versionText.find("zlib/") != std::string::npos;
+        case ZipEngine::ArchiveFormat::TarBz2: return versionText.find("bz2lib/") != std::string::npos;
+        case ZipEngine::ArchiveFormat::TarXz:  return versionText.find("liblzma/") != std::string::npos;
+        default:                               return true;   // plain .tar needs no decompressor
+        }
     }
 
     size_t CountFiles(const std::string& dir)
@@ -625,6 +688,11 @@ namespace
         };
 
         const std::string tarExe = TarExe();
+        const std::string tarVersion = tarExe.empty() ? std::string() : RunCapture(L"\"" + Wide(tarExe) + L"\" --version");
+        if (!tarVersion.empty())
+        {
+            std::printf("  (Windows tar.exe: %s)\n", tarVersion.substr(0, tarVersion.find_first_of("\r\n")).c_str());
+        }
         const std::wstring sevenZip = SevenZipPath();
 
         for (const auto& c : cases)
@@ -656,7 +724,12 @@ namespace
             // the system ANSI code page and cannot handle characters outside it (it skips the
             // CJK name above, and crashes if asked to create such an archive itself), so this
             // check uses an accented Latin name that every Western code page can represent.
-            if (!tarExe.empty())
+            // Formats this tar.exe was built without (e.g. xz on Windows 10 / Server 2022) are skipped.
+            if (!tarExe.empty() && !TarExeSupports(tarVersion, c.format))
+            {
+                std::printf("  (tar.exe cannot decompress %s on this Windows version: extraction check skipped)\n", c.ext);
+            }
+            else if (!tarExe.empty())
             {
                 const std::string accentName = "accent_r\xC3\xA9sum\xC3\xA9.txt";
                 WriteFile(dir + "\\" + accentName, "accented");
@@ -665,7 +738,12 @@ namespace
 
                 const std::string outDir = dir + "\\x" + std::string(c.ext).substr(1);
                 MakeDir(outDir);
-                CHECK(Run(L"\"" + Wide(tarExe) + L"\" -xf \"" + Wide(winPath) + L"\" -C \"" + Wide(outDir) + L"\"") == 0);
+                const int code = Run(L"\"" + Wide(tarExe) + L"\" -xf \"" + Wide(winPath) + L"\" -C \"" + Wide(outDir) + L"\"");
+                if (code != 0)
+                {
+                    std::printf("  tar.exe -xf %s returned %d%s\n", c.ext, code, code == -2 ? " (timed out, killed)" : "");
+                }
+                CHECK(code == 0);
                 CHECK(ReadFile(outDir + "\\notes.txt") == text);
                 CHECK(ReadFile(outDir + "\\data.bin") == binary);
                 CHECK(ReadFile(outDir + "\\" + accentName) == "accented");
@@ -683,6 +761,20 @@ namespace
         }
 
         RemoveTree(dir);
+    }
+
+    // The tar.exe capability probe used above: the old bsdtar in Windows 10 / Server 2022 has
+    // no liblzma, so its .tar.xz check must be skipped (it hangs instead of failing).
+    void TarExeCapabilityProbe()
+    {
+        using ZipEngine::ArchiveFormat;
+        const std::string oldTar = "bsdtar 3.5.2 - libarchive 3.5.2 zlib/1.2.5.f-ipp bz2lib/1.0.6";
+        const std::string newTar = "bsdtar 3.8.9 - libarchive 3.8.9 zlib/1.2.13.1-motley liblzma/5.8.3 bz2lib/1.0.8";
+        CHECK(TarExeSupports(oldTar, ArchiveFormat::Tar));
+        CHECK(TarExeSupports(oldTar, ArchiveFormat::TarGz));
+        CHECK(TarExeSupports(oldTar, ArchiveFormat::TarBz2));
+        CHECK(!TarExeSupports(oldTar, ArchiveFormat::TarXz));
+        CHECK(TarExeSupports(newTar, ArchiveFormat::TarXz));
     }
 
     void TarRulesMatchZip()
@@ -807,6 +899,7 @@ int main()
         { "ProgressReportedAndCancelKeepsOldFile", ProgressReportedAndCancelKeepsOldFile },
         { "SevenZipCanOpen", SevenZipCanOpen },
         { "TarFormatsRoundTrip", TarFormatsRoundTrip },
+        { "TarExeCapabilityProbe", TarExeCapabilityProbe },
         { "TarRulesMatchZip", TarRulesMatchZip },
         { "TarCancelKeepsOldFile", TarCancelKeepsOldFile },
         { "FormatDetection", FormatDetection },
