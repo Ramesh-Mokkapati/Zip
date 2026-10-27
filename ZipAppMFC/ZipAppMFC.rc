@@ -11,11 +11,25 @@ LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
 
 IDR_MAINFRAME           ICON                    "res\\ZipAppMFC.ico"
 
-// Main window. WS_EX_ACCEPTFILES lets files be dragged onto it from Explorer.
-IDD_ZIPAPPMFC_DIALOG DIALOGEX 0, 0, 380, 312
+// Main window: a tab control holding the two pages below, plus Close. The pages are sized
+// and positioned at run time (CZipAppMFCDlg::LayoutPages). WS_EX_ACCEPTFILES lets files be
+// dragged onto it from Explorer; the drop goes to the page that is shown.
+IDD_ZIPAPPMFC_DIALOG DIALOGEX 0, 0, 392, 362
 STYLE DS_SETFONT | DS_FIXEDSYS | DS_CENTER | WS_MINIMIZEBOX | WS_POPUP | WS_VISIBLE | WS_CAPTION | WS_SYSMENU
-EXSTYLE WS_EX_APPWINDOW | WS_EX_ACCEPTFILES
-CAPTION "ZIP / TAR Archive Creator"
+EXSTYLE WS_EX_APPWINDOW | WS_EX_ACCEPTFILES | WS_EX_CONTROLPARENT
+CAPTION "ZIP / TAR Archive Tool"
+FONT 9, "Segoe UI", 400, 0, 0x0
+BEGIN
+    CONTROL         "",IDC_TABS,"SysTabControl32",WS_TABSTOP | WS_CLIPSIBLINGS,4,4,384,334
+    PUSHBUTTON      "Add to Explorer menu",IDC_BTN_SHELL,4,342,112,15
+    PUSHBUTTON      "Close",IDCANCEL,325,342,60,15
+END
+
+// "Create archive" tab (child page; DS_CONTROL + WS_EX_CONTROLPARENT make Tab move through
+// its controls as if they belonged to the main window).
+IDD_PAGE_CREATE DIALOGEX 0, 0, 380, 326
+STYLE DS_SETFONT | DS_FIXEDSYS | DS_CONTROL | WS_CHILD
+EXSTYLE WS_EX_CONTROLPARENT
 FONT 9, "Segoe UI", 400, 0, 0x0
 BEGIN
     LTEXT           "&Files to compress (drag files here, or use Add Files):",IDC_FILES_LABEL,7,7,300,9
@@ -36,19 +50,48 @@ BEGIN
     LTEXT           "C&onfirm password:",IDC_STATIC,193,198,114,9
     EDITTEXT        IDC_EDIT_PASS_CONFIRM,193,209,114,14,ES_PASSWORD | ES_AUTOHSCROLL
     // Text set at run time for the chosen format (see UpdateFormatUi).
-    LTEXT           "",IDC_ENCRYPTION_NOTE,7,227,366,18
+    CONTROL         "Use le&gacy encryption (ZipCrypto) so Windows Explorer can open it - weak",IDC_CHECK_LEGACY,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,7,228,366,10
+    LTEXT           "",IDC_ENCRYPTION_NOTE,7,241,366,26
 
-    CONTROL         "",IDC_PROGRESS,"msctls_progress32",PBS_SMOOTH | WS_BORDER,7,250,366,10
-    LTEXT           "",IDC_STATUS,7,264,366,18,SS_NOPREFIX
+    CONTROL         "",IDC_PROGRESS,"msctls_progress32",PBS_SMOOTH | WS_BORDER,7,270,366,10
+    LTEXT           "",IDC_STATUS,7,284,366,18,SS_NOPREFIX
 
-    DEFPUSHBUTTON   "&Create Archive",IDC_BTN_ZIP,7,291,70,15
-    PUSHBUTTON      "S&top",IDC_BTN_STOP,81,291,60,15
-    PUSHBUTTON      "Close",IDCANCEL,313,291,60,15
+    DEFPUSHBUTTON   "&Create Archive",IDC_BTN_ZIP,7,307,70,15
+    PUSHBUTTON      "S&top",IDC_BTN_STOP,81,307,60,15
+END
+
+// "Extract archive" tab.
+IDD_PAGE_EXTRACT DIALOGEX 0, 0, 380, 326
+STYLE DS_SETFONT | DS_FIXEDSYS | DS_CONTROL | WS_CHILD
+EXSTYLE WS_EX_CONTROLPARENT
+FONT 9, "Segoe UI", 400, 0, 0x0
+BEGIN
+    LTEXT           "&Archive to extract (.zip, .tar, .tar.gz, .tar.bz2, .tar.xz):",IDC_STATIC,7,7,300,9
+    EDITTEXT        IDC_EDIT_ARCHIVE,7,18,300,14,ES_AUTOHSCROLL
+    PUSHBUTTON      "&Browse...",IDC_BTN_ARCHIVE,313,18,60,14
+
+    LTEXT           "Contents:",IDC_STATIC,7,38,120,9
+    CONTROL         "",IDC_LIST_CONTENTS,"SysListView32",LVS_REPORT | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER | WS_BORDER | WS_TABSTOP,7,49,366,108
+    LTEXT           "",IDC_CONTENTS_INFO,7,160,366,18,SS_NOPREFIX
+
+    LTEXT           "Extract &to folder (created if needed):",IDC_STATIC,7,182,200,9
+    EDITTEXT        IDC_EDIT_DEST,7,193,300,14,ES_AUTOHSCROLL
+    PUSHBUTTON      "Bro&wse...",IDC_BTN_DEST,313,193,60,14
+
+    LTEXT           "&Password (only for encrypted ZIP files):",IDC_STATIC,7,212,180,9
+    EDITTEXT        IDC_EDIT_XPASS,7,223,180,14,ES_PASSWORD | ES_AUTOHSCROLL
+    CONTROL         "&Replace existing files",IDC_CHECK_OVERWRITE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,193,225,180,10
+
+    CONTROL         "",IDC_XPROGRESS,"msctls_progress32",PBS_SMOOTH | WS_BORDER,7,270,366,10
+    LTEXT           "",IDC_XSTATUS,7,284,366,18,SS_NOPREFIX
+
+    DEFPUSHBUTTON   "&Extract",IDC_BTN_EXTRACT,7,307,70,15
+    PUSHBUTTON      "S&top",IDC_BTN_XSTOP,81,307,60,15
 END
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 1,1,0,0
- PRODUCTVERSION 1,1,0,0
+ FILEVERSION 1,2,0,0
+ PRODUCTVERSION 1,2,0,0
  FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
 #ifdef _DEBUG
  FILEFLAGS VS_FF_DEBUG
@@ -63,12 +106,12 @@ BEGIN
     BEGIN
         BLOCK "040904B0"
         BEGIN
-            VALUE "FileDescription", "ZIP / TAR Archive Creator"
-            VALUE "FileVersion", "1.1.0.0"
+            VALUE "FileDescription", "ZIP / TAR Archive Tool"
+            VALUE "FileVersion", "1.2.0.0"
             VALUE "InternalName", "ZipAppMFC.exe"
             VALUE "OriginalFilename", "ZipAppMFC.exe"
-            VALUE "ProductName", "ZIP / TAR Archive Creator"
-            VALUE "ProductVersion", "1.1.0.0"
+            VALUE "ProductName", "ZIP / TAR Archive Tool"
+            VALUE "ProductVersion", "1.2.0.0"
         END
     END
     BLOCK "VarFileInfo"

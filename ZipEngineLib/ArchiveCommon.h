@@ -38,5 +38,16 @@ namespace ZipEngine
         Status ValidateInputs(const std::string& outputPath, const std::vector<std::string>& files,
             ValidatedInputs& result, std::string& error);
 
+        // True if the file starts with a ZIP signature ("PK\3\4", or "PK\5\6" for an empty ZIP).
+        bool IsZipFile(const std::wstring& path);
+
+        // Lists a ZIP with libzip (reliable for encrypted entries and data descriptors).
+        Status ListZip(const std::string& archivePath, std::vector<ArchiveEntryInfo>& entries, std::string& error);
+
+        // Turns an archive entry name into a safe relative Windows path ("a/b.txt" -> "a\b.txt").
+        // Returns false (with a reason) for names that would escape the destination or that
+        // Windows cannot use safely; an empty result with true means "the archive root" (skip).
+        bool SafeRelativePath(const std::string& entryName, std::wstring& relative, std::string& reason);
+
     } // namespace detail
 } // namespace ZipEngine

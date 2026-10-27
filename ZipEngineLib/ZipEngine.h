@@ -7,14 +7,21 @@
 /// no standard password encoding, and 7-Zip interprets non-ASCII ZIP passwords in the local
 /// ANSI code page, so only ASCII passwords open reliably on every computer.
 ///
-/// ZIP archives encrypted with a password can be opened by 7-Zip, WinRAR and WinZip. Windows
-/// Explorer's built-in ZIP support cannot open AES-encrypted archives (it only knows the
-/// weak legacy "ZipCrypto" scheme, which this library deliberately does not use).
+/// ZIP archives encrypted with a password use AES-256 by default, which 7-Zip, WinRAR and
+/// WinZip open. Windows Explorer's built-in ZIP support cannot open AES-encrypted archives; it
+/// only knows the legacy "ZipCrypto" scheme. ZipCrypto can be chosen (ZipEncryption::ZipCrypto)
+/// for archives that must open in Explorer, but it is weak: it can be broken in minutes or
+/// hours with free tools, and it does not hide file names or sizes (neither does AES in ZIP).
 /// TAR has no encryption at all; TAR archives are never password-protected.
 ///
 /// Every writer stores each input under its own file name (no folders), validates all inputs
 /// before writing, and never leaves a partial archive: on failure or cancellation nothing is
 /// written and an existing file at the output path is left unchanged.
+///
+/// ExtractArchive unpacks ZIP (including AES-256 and legacy ZipCrypto encrypted entries) and
+/// every TAR variant. It treats archive contents as untrusted: entries that would escape the
+/// destination folder ("Zip Slip"), absolute paths, Windows device names and alternate data
+/// streams are refused before anything is written; links and device entries are skipped.
 
 #pragma once
 #include <functional>
@@ -37,7 +44,13 @@ namespace ZipEngine
         ///< printable ASCII, or a password was given for a format that cannot be encrypted.
         DuplicateEntryName, ///< Two inputs have the same file name (entries are stored without folders).
         FileReadError,      ///< An input file exists but could not be read (locked, access denied).
-        Cancelled           ///< The progress callback asked to stop.
+        Cancelled,          ///< The progress callback asked to stop.
+
+        // Extraction only
+        PasswordRequired,   ///< The ZIP has encrypted entries and no password was given.
+        WrongPassword,      ///< The password does not decrypt the archive (or the encrypted data is corrupt).
+        UnsafeEntry,        ///< An entry would be written outside the destination or has a name Windows cannot use safely.
+        FileExists          ///< A file to be extracted already exists and overwriting was not allowed.
     };
 
     /// Called during compression with the overall progress (0.0 to 1.0).
@@ -58,6 +71,14 @@ namespace ZipEngine
         TarGz,    ///< .tar.gz / .tgz   - tar compressed with gzip
         TarBz2,   ///< .tar.bz2 / .tbz2 - tar compressed with bzip2
         TarXz     ///< .tar.xz / .txz   - tar compressed with xz (LZMA2), usually the smallest
+    };
+
+    /// How a password-protected ZIP is encrypted.
+    enum class ZipEncryption
+    {
+        Aes256,      ///< WinZip AE-2, 256-bit AES: strong. Not readable by Windows Explorer.
+        ZipCrypto,   ///< Traditional PKWARE encryption: opens in Windows Explorer and almost any
+        ///< ZIP tool, but is weak (known-plaintext attacks break it quickly).
     };
 
     /// Display name, e.g. "ZIP", "TAR.GZ".
@@ -103,16 +124,18 @@ namespace ZipEngine
         /// @param outputZipPath UTF-8 path of the .zip to create; an existing file is replaced.
         /// @param filesToAdd    UTF-8 paths of the files to add (at least one; folders are not accepted).
         /// @param password      Empty = no encryption. Otherwise every entry is encrypted with
-        ///                      AES-256 (WinZip AE-2), which 7-Zip/WinRAR/WinZip can open. Must be
-        ///                      printable ASCII (letters, digits, space, punctuation); anything else
-        ///                      returns Status::InvalidArgument.
+        ///                      @p encryption. Must be printable ASCII (letters, digits, space,
+        ///                      punctuation); anything else returns Status::InvalidArgument.
         /// @param progress      Optional progress/cancel callback (see ProgressCallback).
+        /// @param encryption    AES-256 (default; 7-Zip/WinRAR/WinZip) or legacy ZipCrypto (also
+        ///                      Windows Explorer, but weak). Ignored without a password.
         /// @return Status::Success, or the reason for failure (details in GetLastErrorMessage()).
         Status CreateEncryptedZip(
             const std::string& outputZipPath,
             const std::vector<std::string>& filesToAdd,
             const std::string& password = "",
-            ProgressCallback progress = nullptr
+            ProgressCallback progress = nullptr,
+            ZipEncryption encryption = ZipEncryption::Aes256
         );
 
         /// Human-readable description of the last failure (UTF-8), empty after a success.
@@ -158,7 +181,10 @@ namespace ZipEngine
         );
 
         /// Human-readable description of the last failure (UTF-8), empty after a success.
-        const std::string& GetLastErrorMessage() const { return m_lastError; }
+        const std::string& GetLastErrorMessage() const
+        {
+            return m_lastError;
+        }
 
     private:
         Status Fail(Status status, const std::string& message);
@@ -182,6 +208,17 @@ namespace ZipEngine
         std::string& errorMessage
     );
 
+    /// As above, choosing how a password-protected ZIP is encrypted (see ZipEncryption).
+    Status CreateArchive(
+        ArchiveFormat format,
+        const std::string& outputPath,
+        const std::vector<std::string>& filesToAdd,
+        const std::string& password,
+        ZipEncryption encryption,
+        ProgressCallback progress,
+        std::string& errorMessage
+    );
+
     /// One entry as reported by ListArchive.
     struct ArchiveEntryInfo
     {
@@ -195,5 +232,49 @@ namespace ZipEngine
     /// content, not the extension). Encrypted ZIP entries are listed without a password, since
     /// ZIP stores names unencrypted.
     Status ListArchive(const std::string& archivePath, std::vector<ArchiveEntryInfo>& entries, std::string& errorMessage);
+
+    // ---------------------------------------------------------------------------------------
+    // Extraction
+
+    /// What ExtractArchive did.
+    struct ExtractSummary
+    {
+        unsigned                 files = 0;     ///< regular files written
+        unsigned                 folders = 0;   ///< folders created (explicit entries and parents)
+        unsigned long long       bytes = 0;     ///< bytes written
+        std::vector<std::string> skipped;       ///< entries not extracted on purpose (links, devices), UTF-8
+    };
+
+    /// Extracts a ZIP or TAR archive (format detected from the content) into a folder.
+    ///
+    /// Safety: the whole archive is checked before anything is written. These make the call fail
+    /// with Status::UnsafeEntry and write nothing:
+    ///  - names that would leave the destination ("../x", "a/../../x", "/x", "C:\x", "\\server\x")
+    ///  - Windows device names (CON, NUL, COM1, LPT1, ... with any extension), ':' (alternate data
+    ///    streams), characters Windows forbids, and names ending in a dot or space
+    ///  - two entries that would write the same file
+    /// Symbolic links, hard links and device entries (TAR, or ZIP from Unix) are skipped and listed
+    /// in summary.skipped, so an archive cannot plant a link that redirects later writes.
+    ///
+    /// Each file is written to a temporary name and renamed into place only when complete. If the
+    /// extraction fails or is cancelled, the files and folders it created are removed again.
+    ///
+    /// @param archivePath UTF-8 path of the archive.
+    /// @param destFolder  UTF-8 folder to extract into; created if missing.
+    /// @param password    For encrypted ZIP entries (AES or ZipCrypto). Ignored for TAR.
+    /// @param overwrite   false: fail with Status::FileExists if any target file exists (nothing is
+    ///                    written). true: replace existing files.
+    /// @param progress    Optional progress/cancel callback (by bytes written).
+    /// @param summary     Receives counts and skipped entries.
+    /// @param errorMessage Receives the failure description (empty on success).
+    Status ExtractArchive(
+        const std::string& archivePath,
+        const std::string& destFolder,
+        const std::string& password,
+        bool overwrite,
+        ProgressCallback progress,
+        ExtractSummary& summary,
+        std::string& errorMessage
+    );
 
 } // namespace ZipEngine

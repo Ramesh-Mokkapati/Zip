@@ -87,6 +87,7 @@ namespace ZipEngine
             {
                 m_kept = true;
             }
+
         private:
             std::wstring m_path;
             bool m_kept = false;

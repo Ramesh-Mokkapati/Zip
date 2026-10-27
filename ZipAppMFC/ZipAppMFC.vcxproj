@@ -69,15 +69,22 @@
     </ResourceCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="CreatePage.h" />
+    <ClInclude Include="ExtractPage.h" />
     <ClInclude Include="pch.h" />
     <ClInclude Include="resource.h" />
+    <ClInclude Include="ShellIntegration.h" />
     <ClInclude Include="ZipAppMFC.h" />
+    <ClInclude Include="UiHelpers.h" />
     <ClInclude Include="ZipAppMFCDlg.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp">
       <PrecompiledHeader>Create</PrecompiledHeader>
     </ClCompile>
+    <ClCompile Include="CreatePage.cpp" />
+    <ClCompile Include="ExtractPage.cpp" />
+    <ClCompile Include="ShellIntegration.cpp" />
     <ClCompile Include="ZipAppMFC.cpp" />
     <ClCompile Include="ZipAppMFCDlg.cpp" />
   </ItemGroup>

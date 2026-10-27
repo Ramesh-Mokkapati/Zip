@@ -87,6 +87,18 @@ namespace ZipEngine
 
         case Status::Cancelled:
             return "Cancelled";
+
+        case Status::PasswordRequired:
+            return "A password is required";
+
+        case Status::WrongPassword:
+            return "Wrong password";
+
+        case Status::UnsafeEntry:
+            return "Unsafe entry in the archive";
+
+        case Status::FileExists:
+            return "A file already exists";
         }
 
         return "Unknown status";
@@ -102,9 +114,12 @@ namespace ZipEngine
         const std::string& outputZipPath,
         const std::vector<std::string>& filesToAdd,
         const std::string& password,
-        ProgressCallback progress)
+        ProgressCallback progress,
+        ZipEncryption encryption)
     {
         m_lastError.clear();
+        const bool aes = encryption == ZipEncryption::Aes256;
+        const std::string methodName = aes ? "AES-256" : "ZipCrypto";
 
         // ---- Phase 1: validate ---------------------------------------------------------
         // ZIP has no standard password encoding: 7-Zip reads ZIP passwords in the computer's ANSI
@@ -162,14 +177,16 @@ namespace ZipEngine
             }
 
             // Apply encryption if password provided. ZIP_EM_AES_256 = WinZip AE-2 with a 256-bit key
-            // derived from the password; libzip copies the password, so the caller may wipe it after.
+            // derived from the password; ZIP_EM_TRAD_PKWARE = legacy ZipCrypto. libzip copies the
+            // password, so the caller may wipe it after.
             if (!password.empty())
             {
-                if (zip_file_set_encryption(archive, static_cast<zip_uint64_t>(index), ZIP_EM_AES_256, password.c_str()) < 0)
+                const zip_uint16_t method = aes ? ZIP_EM_AES_256 : ZIP_EM_TRAD_PKWARE;
+                if (zip_file_set_encryption(archive, static_cast<zip_uint64_t>(index), method, password.c_str()) < 0)
                 {
                     const std::string why = zip_strerror(archive);
                     zip_discard(archive);
-                    return Fail(Status::EncryptionError, "AES-256 encryption is not available: " + why);
+                    return Fail(Status::EncryptionError, methodName + " encryption is not available: " + why);
                 }
             }
         }
@@ -211,7 +228,7 @@ namespace ZipEngine
                 return Fail(Status::ArchiveCreateError, "Cannot write " + outputZipPath + ": " + why);
 
             case ZIP_ER_ENCRNOTSUPP:
-                return Fail(Status::EncryptionError, "AES-256 encryption is not available: " + why);
+                return Fail(Status::EncryptionError, methodName + " encryption is not available: " + why);
 
             default:
                 return Fail(Status::UnknownError, "Creating the archive failed: " + why);

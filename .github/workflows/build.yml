@@ -96,9 +96,9 @@ jobs:
     permissions:
       contents: write
     env:
-      # Bump the major/minor here (kept in step with the 1.1 version resource and `zipcli --version`);
+      # Bump the major/minor here (kept in step with the 1.2 version resource and `zipcli --version`);
       # the patch number is the workflow run number.
-      VERSION: v1.1.${{ github.run_number }}
+      VERSION: v1.2.${{ github.run_number }}
 
     steps:
       # Only the README is needed from the repository: it documents the app and zipcli's options.
@@ -132,6 +132,6 @@ jobs:
           gh release create "$VERSION" release/*.zip
           --repo "$GITHUB_REPOSITORY"
           --target "$GITHUB_SHA"
-          --title "ZIP / TAR Archive Creator $VERSION"
+          --title "ZIP / TAR Archive Tool $VERSION"
           --generate-notes
           --latest

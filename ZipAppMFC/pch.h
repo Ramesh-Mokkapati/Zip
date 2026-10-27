@@ -15,6 +15,7 @@
 #include <afxcmn.h>             // CProgressCtrl
 #include <afxdialogex.h>
 
+#include <algorithm>
 #include <atomic>
 #include <string>
 #include <vector>

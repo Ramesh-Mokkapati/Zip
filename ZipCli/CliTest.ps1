@@ -52,8 +52,10 @@ function Check([bool] $condition, [string] $what) {
 # Runs zipcli with the given arguments; returns @{ Code; Out; Err }.
 function Invoke-Cli([string[]] $CliArgs) {
     $outFile = Join-Path $work 'stdout.txt'; $errFile = Join-Path $work 'stderr.txt'
+    # stdin from an empty file, not the console: zipcli must never wait for a password here.
+    $inFile = Join-Path $work 'stdin.txt'; if (-not (Test-Path $inFile)) { New-Item -ItemType File $inFile | Out-Null }
     $p = Start-Process -FilePath $cli -ArgumentList $CliArgs -NoNewWindow -Wait -PassThru `
-                       -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+                       -RedirectStandardInput $inFile -RedirectStandardOutput $outFile -RedirectStandardError $errFile
     return @{ Code = $p.ExitCode
               Out  = [IO.File]::ReadAllText($outFile, [Text.Encoding]::UTF8)
               Err  = [IO.File]::ReadAllText($errFile, [Text.Encoding]::UTF8) }
@@ -114,6 +116,72 @@ try {
     # xz streams start with the magic bytes FD 37 7A 58 5A 00 ("\xFD7zXZ\0").
     $magic = ([IO.File]::ReadAllBytes((Join-Path $work 'named.zip')) | Select-Object -First 6 | ForEach-Object { $_.ToString('X2') }) -join ' '
     Check ($magic -eq 'FD 37 7A 58 5A 00') "...and the file really is xz-compressed ($magic)"
+
+    Write-Host 'Extract'
+    $r = Invoke-Cli @('--help');                                 Check ($r.Out -match 'zipcli extract') '--help describes extract'
+    $r = Invoke-Cli @('extract');                                Check ($r.Code -eq 1 -and $r.Err -match 'no archive') 'extract without an archive -> exit 1'
+    $r = Invoke-Cli @('extract', 'missing.zip');                 Check ($r.Code -eq 2 -and $r.Err -match 'not found') 'extract a missing archive -> exit 2'
+    $r = Invoke-Cli @('extract', 'c.txt', '-d', 'notarc');       Check ($r.Code -eq 2 -and -not (Test-Path notarc)) 'extract a file that is not an archive -> exit 2'
+
+    $r = Invoke-Cli @('create', '-q', '--password-env', 'ZIPCLI_TEST_PW', 'enc.zip', '*.log', 'c.txt')
+    $r = Invoke-Cli @('extract', '--password-env', 'ZIPCLI_TEST_PW', 'enc.zip')
+    Check ($r.Code -eq 0 -and $r.Out -match 'Extracted 3 file' -and (Get-Content enc\c.txt -Raw) -eq 'charlie' -and
+           (Get-Content enc\a.log -Raw) -eq 'alpha') 'extract enc.zip into .\enc (the default folder) with --password-env'
+    'changed' | Set-Content -NoNewline -Encoding ASCII enc\c.txt
+    $r = Invoke-Cli @('extract', '--password-env', 'ZIPCLI_TEST_PW', 'enc.zip')
+    Check ($r.Code -eq 2 -and $r.Err -match '--force' -and (Get-Content enc\c.txt -Raw) -eq 'changed') 'existing files are kept without --force'
+    $r = Invoke-Cli @('extract', '--force', '-q', '--password-env', 'ZIPCLI_TEST_PW', 'enc.zip')
+    Check ($r.Code -eq 0 -and $r.Out -eq '' -and (Get-Content enc\c.txt -Raw) -eq 'charlie') '--force replaces them; -q prints nothing'
+    $r = Invoke-Cli @('extract', '--password', 'wrong', 'enc.zip', '-d', 'bad')
+    Check ($r.Code -eq 2 -and $r.Err -match 'password' -and -not (Test-Path bad\a.log)) 'wrong password -> exit 2, nothing written'
+    $r = Invoke-Cli @('extract', 'enc.zip', '-d', 'nopw')
+    Check ($r.Code -eq 2 -and $r.Err -match 'is encrypted' -and -not (Test-Path nopw\a.log)) 'encrypted, no password and no console -> exit 2'
+    $r = Invoke-Cli @('extract', '--password', 'pw', '-p', 'enc.zip'); Check ($r.Code -eq 1) 'two password options -> exit 1'
+
+    foreach ($ext in 'tar', 'tar.gz', 'tgz', 'tar.bz2', 'tar.xz') {
+        $dest = "out_$($ext.Replace('.', '_'))"
+        $r = Invoke-Cli @('x', "logs.$ext", '-d', $dest)
+        Check ($r.Code -eq 0 -and (Get-Content "$dest\b.log" -Raw) -eq 'bravo') "extract logs.$ext"
+    }
+
+    # A hostile archive: an entry named ..\evil.txt would land outside the chosen folder.
+    Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+    $zip = [IO.Compression.ZipFile]::Open((Join-Path $work 'evil.zip'), 'Create')
+    $w = New-Object IO.StreamWriter ($zip.CreateEntry('safe.txt').Open()); $w.Write('fine'); $w.Dispose()
+    $w = New-Object IO.StreamWriter ($zip.CreateEntry('../evil.txt').Open()); $w.Write('gotcha'); $w.Dispose()
+    $zip.Dispose()
+    New-Item -ItemType Directory jail | Out-Null
+    $r = Invoke-Cli @('extract', 'evil.zip', '-d', 'jail\inner')
+    Check ($r.Code -eq 2 -and $r.Err -match 'refused' -and -not (Test-Path jail\evil.txt) -and -not (Test-Path jail\inner\safe.txt)) 'Zip Slip entry refused, nothing written'
+
+    Write-Host 'Legacy ZipCrypto encryption'
+    $r = Invoke-Cli @('create', '--legacy', 'x.zip', 'c.txt');   Check ($r.Code -eq 1 -and $r.Err -match 'need a password') '--legacy without a password -> exit 1'
+    $r = Invoke-Cli @('create', '-e', 'rot13', '--password', 'pw', 'x.zip', 'c.txt'); Check ($r.Code -eq 1 -and $r.Err -match 'unknown encryption') 'unknown --encryption -> exit 1'
+    $r = Invoke-Cli @('create', '--legacy', '--password-env', 'ZIPCLI_TEST_PW', 'legacy.zip', '*.log', 'c.txt')
+    Check ($r.Code -eq 0 -and $r.Out -match 'ZipCrypto encrypted' -and $r.Err -match 'weak') 'create legacy.zip: reports ZipCrypto and warns that it is weak'
+    # Local file header: general-purpose flags at offset 6 (bit 0 = encrypted), method at 8 (99 = AES;
+    # ZipCrypto keeps the real method: 8 = Deflate, or 0 = Stored for a file too small to compress).
+    $head = [IO.File]::ReadAllBytes((Join-Path $work 'legacy.zip'))
+    Check ((($head[6] -band 1) -eq 1) -and $head[8] -ne 99) "...and its entries are ZipCrypto, not AES (flags $($head[6]), method $($head[8]))"
+    $r = Invoke-Cli @('create', '-e', 'aes256', '--password-env', 'ZIPCLI_TEST_PW', 'modern.zip', 'c.txt')
+    $head = [IO.File]::ReadAllBytes((Join-Path $work 'modern.zip'))
+    Check ($r.Code -eq 0 -and $r.Out -match 'AES-256' -and $head[8] -eq 99) '--encryption aes256 writes AES (method 99)'
+    $r = Invoke-Cli @('extract', '--password-env', 'ZIPCLI_TEST_PW', 'legacy.zip', '-d', 'legacy_out')
+    Check ($r.Code -eq 0 -and (Get-Content legacy_out\b.log -Raw) -eq 'bravo') 'extract legacy.zip'
+    $r = Invoke-Cli @('extract', '--password', 'nope', 'legacy.zip', '-d', 'legacy_bad')
+    Check ($r.Code -eq 2 -and -not (Test-Path legacy_bad\a.log)) 'legacy.zip with a wrong password -> exit 2'
+    if ($sevenZip) {
+        & $sevenZip t -pEnv-Pass-123 legacy.zip -bso0 -bsp0;      Check ($LASTEXITCODE -eq 0) '7-Zip opens legacy.zip with the password'
+    }
+
+    if ($sevenZip) {
+        & $sevenZip a -tzip -mem=AES256 -pSeven-7 seven.zip a.log c.txt -bso0 -bsp0 | Out-Null
+        $r = Invoke-Cli @('extract', '--password', 'Seven-7', 'seven.zip', '-d', 'seven')
+        Check ($r.Code -eq 0 -and (Get-Content seven\c.txt -Raw) -eq 'charlie') 'extract an AES-256 ZIP made by 7-Zip'
+        & $sevenZip a -tzip -mem=ZipCrypto -pSeven-7 seven-legacy.zip b.log -bso0 -bsp0 | Out-Null
+        $r = Invoke-Cli @('extract', '--password', 'Seven-7', 'seven-legacy.zip', '-d', 'seven-legacy')
+        Check ($r.Code -eq 0 -and (Get-Content seven-legacy\b.log -Raw) -eq 'bravo') 'extract a ZipCrypto ZIP made by 7-Zip'
+    }
 }
 finally {
     Pop-Location

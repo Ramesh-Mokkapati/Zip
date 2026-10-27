@@ -117,7 +117,10 @@ namespace
         return data;
     }
 
-    bool Exists(const std::string& path) { return GetFileAttributesW(Wide(path).c_str()) != INVALID_FILE_ATTRIBUTES; }
+    bool Exists(const std::string& path)
+    {
+        return GetFileAttributesW(Wide(path).c_str()) != INVALID_FILE_ATTRIBUTES;
+    }
 
     void RemoveTree(const std::string& path)
     {
@@ -301,6 +304,7 @@ namespace
         {
             return std::string();
         }
+
         SetHandleInformation(readPipe, HANDLE_FLAG_INHERIT, 0);
 
         STARTUPINFOW si = { sizeof(si) };
@@ -320,6 +324,7 @@ namespace
             {
                 output.append(buf, got);
             }
+
             WaitForSingleObject(pi.hProcess, 10000);
             CloseHandle(pi.hProcess);
             CloseHandle(pi.hThread);
@@ -383,10 +388,18 @@ namespace
     {
         switch (format)
         {
-        case ZipEngine::ArchiveFormat::TarGz:  return versionText.find("zlib/") != std::string::npos;
-        case ZipEngine::ArchiveFormat::TarBz2: return versionText.find("bz2lib/") != std::string::npos;
-        case ZipEngine::ArchiveFormat::TarXz:  return versionText.find("liblzma/") != std::string::npos;
-        default:                               return true;   // plain .tar needs no decompressor
+
+        case ZipEngine::ArchiveFormat::TarGz:
+            return versionText.find("zlib/") != std::string::npos;
+
+        case ZipEngine::ArchiveFormat::TarBz2:
+            return versionText.find("bz2lib/") != std::string::npos;
+
+        case ZipEngine::ArchiveFormat::TarXz:
+            return versionText.find("liblzma/") != std::string::npos;
+
+        default:
+            return true;   // plain .tar needs no decompressor
         }
     }
 
@@ -661,6 +674,75 @@ namespace
         RemoveTree(dir);
     }
 
+    // Encryption method of every entry of a ZIP (ZIP_EM_*), read back with libzip.
+    std::vector<int> EncryptionMethods(const std::string& path)
+    {
+        std::vector<int> methods;
+        int err = 0;
+        zip_t* za = zip_open(path.c_str(), ZIP_RDONLY, &err);
+        if (!za)
+        {
+            return methods;
+        }
+
+        for (zip_int64_t i = 0; i < zip_get_num_entries(za, 0); ++i)
+        {
+            zip_stat_t st;
+            zip_stat_init(&st);
+            if (zip_stat_index(za, static_cast<zip_uint64_t>(i), 0, &st) == 0 && (st.valid & ZIP_STAT_ENCRYPTION_METHOD))
+            {
+                methods.push_back(st.encryption_method);
+            }
+        }
+
+        zip_close(za);
+        return methods;
+    }
+
+    // The legacy option writes ZipCrypto (what Windows Explorer can open); the default stays AES.
+    void ZipCryptoLegacyOption()
+    {
+        const std::string dir = NewDir("zipcrypto");
+        const std::string secret = "legacy-plaintext-marker-1234567890";
+        WriteFile(dir + "\\a.txt", secret);
+        WriteFile(dir + "\\b.bin", Pseudorandom(50000, 5));
+        const std::vector<std::string> files = { dir + "\\a.txt", dir + "\\b.bin" };
+        std::string error;
+
+        const std::string legacy = dir + "\\legacy.zip";
+        CHECK(ZipEngine::CreateArchive(ZipEngine::ArchiveFormat::Zip, legacy, files, "Old-Pass-1",
+            ZipEngine::ZipEncryption::ZipCrypto, nullptr, error) == Status::Success);
+        CHECK(EncryptionMethods(legacy) == std::vector<int>({ ZIP_EM_TRAD_PKWARE, ZIP_EM_TRAD_PKWARE }));
+        CHECK(ReadFile(legacy).find(secret) == std::string::npos);   // contents really are encrypted
+
+        ZipEngine::ExtractSummary summary;
+        CHECK(ZipEngine::ExtractArchive(legacy, dir + "\\bad", "wrong", false, nullptr, summary, error) == Status::WrongPassword);
+        CHECK(!Exists(dir + "\\bad"));
+        CHECK(ZipEngine::ExtractArchive(legacy, dir + "\\out", "Old-Pass-1", false, nullptr, summary, error) == Status::Success);
+        CHECK(ReadFile(dir + "\\out\\a.txt") == secret);
+        CHECK(ReadFile(dir + "\\out\\b.bin") == Pseudorandom(50000, 5));
+
+        // The old overload and the explicit default both mean AES-256.
+        const std::string modern = dir + "\\modern.zip";
+        CHECK(ZipEngine::CreateArchive(ZipEngine::ArchiveFormat::Zip, modern, files, "New-Pass-1", nullptr, error) == Status::Success);
+        CHECK(EncryptionMethods(modern) == std::vector<int>({ ZIP_EM_AES_256, ZIP_EM_AES_256 }));
+
+        // Without a password the choice is irrelevant: nothing is encrypted.
+        const std::string plain = dir + "\\plain.zip";
+        CHECK(ZipEngine::CreateArchive(ZipEngine::ArchiveFormat::Zip, plain, files, "",
+            ZipEngine::ZipEncryption::ZipCrypto, nullptr, error) == Status::Success);
+        CHECK(EncryptionMethods(plain) == std::vector<int>({ ZIP_EM_NONE, ZIP_EM_NONE }));
+
+        const std::wstring sevenZip = SevenZipPath();
+        if (!sevenZip.empty())
+        {
+            CHECK(SevenZipTest(sevenZip, legacy, "Old-Pass-1") == 0);
+            CHECK(SevenZipTest(sevenZip, legacy, "wrong") != 0);
+        }
+
+        RemoveTree(dir);
+    }
+
     // ---- TAR ------------------------------------------------------------------------
 
     void TarFormatsRoundTrip()
@@ -680,7 +762,8 @@ namespace
         WriteFile(dir + "\\" + unicodeName, "unicode content");
         const std::vector<std::string> inputs = { dir + "\\notes.txt", dir + "\\data.bin", dir + "\\" + unicodeName };
 
-        const struct { ArchiveFormat format; const char* ext; int filter; } cases[] = {
+        const struct { ArchiveFormat format; const char* ext; int filter; } cases[] =
+        {
             { ArchiveFormat::Tar,    ".tar",     ARCHIVE_FILTER_NONE },
             { ArchiveFormat::TarGz,  ".tar.gz",  ARCHIVE_FILTER_GZIP },
             { ArchiveFormat::TarBz2, ".tar.bz2", ARCHIVE_FILTER_BZIP2 },
@@ -693,6 +776,7 @@ namespace
         {
             std::printf("  (Windows tar.exe: %s)\n", tarVersion.substr(0, tarVersion.find_first_of("\r\n")).c_str());
         }
+
         const std::wstring sevenZip = SevenZipPath();
 
         for (const auto& c : cases)
@@ -743,6 +827,7 @@ namespace
                 {
                     std::printf("  tar.exe -xf %s returned %d%s\n", c.ext, code, code == -2 ? " (timed out, killed)" : "");
                 }
+
                 CHECK(code == 0);
                 CHECK(ReadFile(outDir + "\\notes.txt") == text);
                 CHECK(ReadFile(outDir + "\\data.bin") == binary);
@@ -876,6 +961,398 @@ namespace
         RemoveTree(dir);
     }
 
+    // ---- Extraction -----------------------------------------------------------------
+
+    // Builds a ZIP with arbitrary entry names (including hostile ones the engine would never
+    // write) straight through libzip. Names ending in '/' become folder entries.
+    struct RawEntry
+    {
+        std::string name;
+        std::string content;
+        unsigned    unixMode = 0;   // e.g. 0120777 marks a symbolic link
+    };
+
+    bool MakeRawZip(const std::string& path, const std::vector<RawEntry>& entries)
+    {
+        int err = 0;
+        zip_t* za = zip_open(path.c_str(), ZIP_CREATE | ZIP_TRUNCATE, &err);
+        if (!za)
+        {
+            return false;
+        }
+
+        for (const RawEntry& e : entries)
+        {
+            zip_int64_t idx = -1;
+            if (!e.name.empty() && e.name.back() == '/')
+            {
+                idx = zip_dir_add(za, e.name.c_str(), ZIP_FL_ENC_UTF_8);
+            }
+            else
+            {
+                // libzip copies nothing until zip_close, so the data must outlive this call:
+                // keep a heap copy that libzip frees (freep = 1).
+                char* copy = static_cast<char*>(malloc(e.content.size() + 1));
+                memcpy(copy, e.content.data(), e.content.size());
+                zip_source_t* src = zip_source_buffer(za, copy, e.content.size(), 1);
+                idx = zip_file_add(za, e.name.c_str(), src, ZIP_FL_ENC_UTF_8 | ZIP_FL_OVERWRITE);
+            }
+
+            if (idx >= 0 && e.unixMode)
+            {
+                zip_file_set_external_attributes(za, static_cast<zip_uint64_t>(idx), 0, ZIP_OPSYS_UNIX, static_cast<zip_uint32_t>(e.unixMode) << 16);
+            }
+        }
+
+        return zip_close(za) == 0;
+    }
+
+    // Builds a .tar with arbitrary names and entry types through libarchive.
+    struct RawTarEntry
+    {
+        std::string name;
+        std::string content;
+        unsigned    type = AE_IFREG;    // AE_IFREG, AE_IFDIR, AE_IFLNK
+        std::string linkTarget;         // symlink target (AE_IFLNK) or hard link target (hardlink = true)
+        bool        hardlink = false;
+    };
+
+    bool MakeRawTar(const std::string& path, const std::vector<RawTarEntry>& entries)
+    {
+        archive* a = archive_write_new();
+        archive_write_set_format_pax_restricted(a);
+        if (archive_write_open_filename_w(a, Wide(path).c_str()) != ARCHIVE_OK)
+        {
+            archive_write_free(a);
+            return false;
+        }
+
+        for (const RawTarEntry& e : entries)
+        {
+            archive_entry* entry = archive_entry_new();
+            archive_entry_set_pathname_utf8(entry, e.name.c_str());
+            archive_entry_set_filetype(entry, e.type);
+            archive_entry_set_perm(entry, e.type == AE_IFDIR ? 0755 : 0644);
+            if (e.type == AE_IFLNK)
+            {
+                archive_entry_set_symlink_utf8(entry, e.linkTarget.c_str());
+            }
+
+            if (e.hardlink)
+            {
+                archive_entry_set_hardlink_utf8(entry, e.linkTarget.c_str());
+            }
+
+            const bool hasData = e.type == AE_IFREG && !e.hardlink;
+            archive_entry_set_size(entry, hasData ? static_cast<la_int64_t>(e.content.size()) : 0);
+            archive_write_header(a, entry);
+            if (hasData && !e.content.empty())
+            {
+                archive_write_data(a, e.content.data(), e.content.size());
+            }
+
+            archive_entry_free(entry);
+        }
+
+        archive_write_close(a);
+        archive_write_free(a);
+        return true;
+    }
+
+    ZipEngine::Status Extract(const std::string& archive, const std::string& dest, const std::string& password,
+        bool overwrite, ZipEngine::ExtractSummary& summary, std::string& error,
+        ZipEngine::ProgressCallback progress = nullptr)
+    {
+        return ZipEngine::ExtractArchive(archive, dest, password, overwrite, progress, summary, error);
+    }
+
+    void ExtractRoundTripAllFormats()
+    {
+        using ZipEngine::ArchiveFormat;
+        const std::string dir = NewDir("xround");
+        const std::string text = "round trip text\r\n";
+        const std::string binary = Pseudorandom(300000, 21);
+        const std::string unicodeName = "r\xC3\xA9sum\xC3\xA9_\xE6\x96\x87\xE4\xBB\xB6.txt";
+        MakeDir(dir + "\\in");
+        WriteFile(dir + "\\in\\notes.txt", text);
+        WriteFile(dir + "\\in\\data.bin", binary);
+        WriteFile(dir + "\\in\\" + unicodeName, "unicode");
+        const std::vector<std::string> inputs = { dir + "\\in\\notes.txt", dir + "\\in\\data.bin", dir + "\\in\\" + unicodeName };
+
+        const struct { ArchiveFormat format; const char* ext; const char* password; } cases[] = {
+            { ArchiveFormat::Zip,    ".zip",     "Round-Trip-1" },
+            { ArchiveFormat::Zip,    ".zip",     "" },
+            { ArchiveFormat::Tar,    ".tar",     "" },
+            { ArchiveFormat::TarGz,  ".tar.gz",  "" },
+            { ArchiveFormat::TarBz2, ".tar.bz2", "" },
+            { ArchiveFormat::TarXz,  ".tar.xz",  "" },
+        };
+
+        int n = 0;
+        for (const auto& c : cases)
+        {
+            const std::string archive = dir + "\\a" + std::to_string(n) + c.ext;
+            const std::string dest = dir + "\\out" + std::to_string(n++);
+            std::string error;
+            CHECK(ZipEngine::CreateArchive(c.format, archive, inputs, c.password, nullptr, error) == Status::Success);
+
+            ZipEngine::ExtractSummary summary;
+            CHECK(Extract(archive, dest, c.password, false, summary, error) == Status::Success);
+            CHECK(summary.files == 3 && summary.skipped.empty());
+            CHECK(summary.bytes == text.size() + binary.size() + 7);
+            CHECK(ReadFile(dest + "\\notes.txt") == text);
+            CHECK(ReadFile(dest + "\\data.bin") == binary);
+            CHECK(ReadFile(dest + "\\" + unicodeName) == "unicode");
+            CHECK(CountFiles(dest) == 3);   // no ".~part" leftovers
+
+            // The original modification time is restored (to within the 2 s ZIP resolution).
+            WIN32_FILE_ATTRIBUTE_DATA a = {}, b = {};
+            GetFileAttributesExW(Wide(dir + "\\in\\data.bin").c_str(), GetFileExInfoStandard, &a);
+            GetFileAttributesExW(Wide(dest + "\\data.bin").c_str(), GetFileExInfoStandard, &b);
+            const auto ticks = [](const FILETIME& f) { return (static_cast<long long>(f.dwHighDateTime) << 32) | f.dwLowDateTime; };
+            CHECK(llabs(ticks(a.ftLastWriteTime) - ticks(b.ftLastWriteTime)) <= 2 * 10000000LL);
+        }
+
+        RemoveTree(dir);
+    }
+
+    void ExtractZipPasswords()
+    {
+        const std::string dir = NewDir("xpw");
+        WriteFile(dir + "\\secret.txt", "top secret");
+        const std::string archive = dir + "\\s.zip";
+        std::string error;
+        CHECK(ZipEngine::CreateArchive(ZipEngine::ArchiveFormat::Zip, archive, { dir + "\\secret.txt" }, "Right-Pass-9", nullptr, error) == Status::Success);
+
+        ZipEngine::ExtractSummary summary;
+        CHECK(Extract(archive, dir + "\\out", "", false, summary, error) == Status::PasswordRequired);
+        CHECK(!Exists(dir + "\\out"));   // nothing created, not even the folder
+        CHECK(Extract(archive, dir + "\\out", "wrong", false, summary, error) == Status::WrongPassword);
+        CHECK(!Exists(dir + "\\out"));
+        CHECK(Extract(archive, dir + "\\out", "Right-Pass-9", false, summary, error) == Status::Success);
+        CHECK(ReadFile(dir + "\\out\\secret.txt") == "top secret");
+
+        // A password given for an unencrypted archive is simply not needed.
+        CHECK(ZipEngine::CreateArchive(ZipEngine::ArchiveFormat::Zip, dir + "\\p.zip", { dir + "\\secret.txt" }, "", nullptr, error) == Status::Success);
+        CHECK(Extract(dir + "\\p.zip", dir + "\\out2", "unused", false, summary, error) == Status::Success);
+        RemoveTree(dir);
+    }
+
+    void ExtractRefusesUnsafeEntries()
+    {
+        const std::string dir = NewDir("xunsafe");
+        const char* hostile[] = {
+            "../evil.txt",            // classic Zip Slip
+            "..\\evil.txt",           // same, Windows separator
+            "ok/../../evil.txt",      // escapes after a harmless-looking prefix
+            "/evil.txt",              // absolute (Unix style)
+            "\\evil.txt",             // absolute (Windows style)
+            "C:/evil.txt",            // drive letter
+            "C:evil.txt",             // drive-relative
+            "notes.txt:hidden",       // alternate data stream
+            "CON",                    // device name
+            "nul.txt",                // device name with an extension
+            "sub/LPT1.log",           // device name in a sub-folder
+            "trailing.",              // Windows would strip the dot
+            "bad|name.txt",           // forbidden character
+        };
+
+        int n = 0;
+        for (const char* name : hostile)
+        {
+            // Each hostile name hides behind a harmless entry, which must not be written either.
+            const std::string zipPath = dir + "\\h" + std::to_string(n) + ".zip";
+            const std::string tarPath = dir + "\\h" + std::to_string(n) + ".tar";
+            const std::string dest = dir + "\\dest" + std::to_string(n++);
+
+            CHECK(MakeRawZip(zipPath, { { "harmless.txt", "fine" }, { name, "payload" } }));
+            CHECK(MakeRawTar(tarPath, { { "harmless.txt", "fine" }, { name, "payload" } }));
+
+            for (const std::string& archive : { zipPath, tarPath })
+            {
+                ZipEngine::ExtractSummary summary;
+                std::string error;
+                const Status status = Extract(archive, dest, "", true, summary, error);
+                if (status != Status::UnsafeEntry)
+                {
+                    std::printf("  hostile entry \"%s\" in %s gave status %d\n", name, archive.c_str(), static_cast<int>(status));
+                }
+
+                CHECK(status == Status::UnsafeEntry);
+                CHECK(error.find("Nothing was extracted") != std::string::npos);
+                CHECK(!Exists(dest));                       // nothing written at all
+            }
+        }
+
+        CHECK(!Exists(dir + "\\evil.txt"));
+        CHECK(!Exists(dir + "\\..\\evil.txt"));
+        CHECK(!Exists("C:\\evil.txt"));
+
+        // Duplicate targets (differing only in case on Windows) are refused too.
+        CHECK(MakeRawZip(dir + "\\dup.zip", { { "a.txt", "1" }, { "A.TXT", "2" } }));
+        ZipEngine::ExtractSummary summary;
+        std::string error;
+        CHECK(Extract(dir + "\\dup.zip", dir + "\\dupout", "", false, summary, error) == Status::UnsafeEntry);
+        RemoveTree(dir);
+    }
+
+    void ExtractSkipsLinks()
+    {
+        const std::string dir = NewDir("xlinks");
+
+        // A symlink pointing at a system folder, then a file "through" it: a classic way to
+        // redirect writes. The link must never be created, so the file lands in the destination.
+        CHECK(MakeRawTar(dir + "\\links.tar", {
+            { "link", "", AE_IFLNK, "C:\\Windows" },
+            { "hard", "", AE_IFREG, "normal.txt", true },
+            { "normal.txt", "normal" },
+            }));
+
+        ZipEngine::ExtractSummary summary;
+        std::string error;
+        CHECK(Extract(dir + "\\links.tar", dir + "\\out", "", false, summary, error) == Status::Success);
+        CHECK(summary.files == 1 && summary.skipped.size() == 2);
+        CHECK(!Exists(dir + "\\out\\link") && !Exists(dir + "\\out\\hard"));
+        CHECK(ReadFile(dir + "\\out\\normal.txt") == "normal");
+
+        // ZIP made on Unix with a symbolic-link entry.
+        CHECK(MakeRawZip(dir + "\\links.zip", { { "ln", "/etc/passwd", 0120777 }, { "real.txt", "real" } }));
+        CHECK(Extract(dir + "\\links.zip", dir + "\\out2", "", false, summary, error) == Status::Success);
+        CHECK(summary.files == 1 && summary.skipped.size() == 1 && summary.skipped[0] == "ln");
+        CHECK(!Exists(dir + "\\out2\\ln"));
+        RemoveTree(dir);
+    }
+
+    void ExtractFoldersFromOtherTools()
+    {
+        // Archives from other tools usually contain folders, "./" prefixes and empty folders.
+        const std::string dir = NewDir("xfolders");
+        CHECK(MakeRawZip(dir + "\\tree.zip", {
+            { "project/", "" }, { "project/src/main.c", "int main(){}" }, { "project/docs/", "" },
+            { "project\\win\\style.txt", "backslashes" }, { "./top.txt", "top" },
+            }));
+
+        ZipEngine::ExtractSummary summary;
+        std::string error;
+        CHECK(Extract(dir + "\\tree.zip", dir + "\\out", "", false, summary, error) == Status::Success);
+        CHECK(ReadFile(dir + "\\out\\project\\src\\main.c") == "int main(){}");
+        CHECK(ReadFile(dir + "\\out\\project\\win\\style.txt") == "backslashes");
+        CHECK(ReadFile(dir + "\\out\\top.txt") == "top");
+        CHECK(GetFileAttributesW(Wide(dir + "\\out\\project\\docs").c_str()) & FILE_ATTRIBUTE_DIRECTORY);   // empty folder kept
+        CHECK(summary.files == 3);
+
+        CHECK(MakeRawTar(dir + "\\tree.tar", { { "./pkg/", "", AE_IFDIR }, { "./pkg/a.txt", "A" }, { "pkg/b/c.txt", "C" } }));
+        CHECK(Extract(dir + "\\tree.tar", dir + "\\out2", "", false, summary, error) == Status::Success);
+        CHECK(ReadFile(dir + "\\out2\\pkg\\a.txt") == "A" && ReadFile(dir + "\\out2\\pkg\\b\\c.txt") == "C");
+        RemoveTree(dir);
+    }
+
+    void ExtractExistingFiles()
+    {
+        const std::string dir = NewDir("xexist");
+        WriteFile(dir + "\\a.txt", "new A");
+        WriteFile(dir + "\\b.txt", "new B");
+        std::string error;
+        CHECK(ZipEngine::CreateArchive(ZipEngine::ArchiveFormat::TarGz, dir + "\\t.tgz", { dir + "\\a.txt", dir + "\\b.txt" }, "", nullptr, error) == Status::Success);
+
+        MakeDir(dir + "\\out");
+        WriteFile(dir + "\\out\\b.txt", "old B");
+        ZipEngine::ExtractSummary summary;
+        CHECK(Extract(dir + "\\t.tgz", dir + "\\out", "", false, summary, error) == Status::FileExists);
+        CHECK(error.find("b.txt") != std::string::npos);
+        CHECK(ReadFile(dir + "\\out\\b.txt") == "old B");
+        CHECK(!Exists(dir + "\\out\\a.txt"));   // nothing was written
+
+        CHECK(Extract(dir + "\\t.tgz", dir + "\\out", "", true, summary, error) == Status::Success);
+        CHECK(ReadFile(dir + "\\out\\a.txt") == "new A" && ReadFile(dir + "\\out\\b.txt") == "new B");
+        RemoveTree(dir);
+    }
+
+    void ExtractCancelRollsBack()
+    {
+        const std::string dir = NewDir("xcancel");
+        WriteFile(dir + "\\first.bin", Pseudorandom(2 * 1024 * 1024, 31));
+        WriteFile(dir + "\\second.bin", Pseudorandom(2 * 1024 * 1024, 32));
+        std::string error;
+        CHECK(ZipEngine::CreateArchive(ZipEngine::ArchiveFormat::Zip, dir + "\\big.zip", { dir + "\\first.bin", dir + "\\second.bin" }, "Cancel-Me-1", nullptr, error) == Status::Success);
+
+        // An existing destination with a file of its own: that file must survive the rollback.
+        MakeDir(dir + "\\out");
+        WriteFile(dir + "\\out\\mine.txt", "keep me");
+        ZipEngine::ExtractSummary summary;
+
+        CHECK(Extract(dir + "\\big.zip", dir + "\\out", "Cancel-Me-1", false, summary, error,
+            [](double p) { return p < 0.7; }) == Status::Cancelled);
+        CHECK(ReadFile(dir + "\\out\\mine.txt") == "keep me");
+        CHECK(CountFiles(dir + "\\out") == 1);   // first.bin (complete) and the partial second.bin removed
+
+        // A destination created by the cancelled run is removed entirely.
+        CHECK(Extract(dir + "\\big.zip", dir + "\\fresh\\nested", "Cancel-Me-1", false, summary, error,
+            [](double p) { return p < 0.7; }) == Status::Cancelled);
+        CHECK(!Exists(dir + "\\fresh"));
+        RemoveTree(dir);
+    }
+
+    void ExtractBadInputs()
+    {
+        const std::string dir = NewDir("xbad");
+        WriteFile(dir + "\\not-an-archive.txt", "just text, not an archive at all");
+        ZipEngine::ExtractSummary summary;
+        std::string error;
+        CHECK(Extract(dir + "\\missing.zip", dir + "\\out", "", false, summary, error) == Status::FileNotFound);
+        CHECK(Extract(dir + "\\not-an-archive.txt", dir + "\\out", "", false, summary, error) == Status::FileReadError);
+        CHECK(Extract(dir + "\\not-an-archive.txt", "", "", false, summary, error) == Status::InvalidArgument);
+        CHECK(Extract(dir + "\\not-an-archive.txt", dir + "\\not-an-archive.txt", "", false, summary, error) == Status::InvalidArgument);
+        CHECK(!Exists(dir + "\\out"));
+        RemoveTree(dir);
+    }
+
+    void ExtractSevenZipArchives()
+    {
+        // Archives made by 7-Zip itself: AES-256 and legacy ZipCrypto ZIPs with nested folders.
+        const std::wstring sevenZip = SevenZipPath();
+        if (sevenZip.empty())
+        {
+            std::printf("  (skipped: 7-Zip is not installed)\n");
+            return;
+        }
+
+        const std::string dir = NewDir("x7z");
+        MakeDir(dir + "\\src");
+        MakeDir(dir + "\\src\\inner");
+        WriteFile(dir + "\\src\\top.txt", "top level");
+        WriteFile(dir + "\\src\\inner\\deep.bin", Pseudorandom(50000, 41));
+
+        for (const wchar_t* method : { L"AES256", L"ZipCrypto" })
+        {
+            const std::string archive = dir + "\\by7z-" + Utf8(method) + ".zip";
+
+            // -r recurses; running in src keeps the paths relative ("top.txt", "inner\deep.bin").
+            const std::wstring cmd = L"cmd.exe /c cd /d \"" + Wide(dir) + L"\\src\" && \"" + sevenZip + L"\" a -tzip -r -mem=" + method +
+                L" -pSeven-Zip-Pass \"" + Wide(archive) + L"\" * >nul";
+
+            CHECK(Run(cmd) == 0);
+
+            const std::string dest = dir + "\\out-" + Utf8(method);
+            ZipEngine::ExtractSummary summary;
+            std::string error;
+            CHECK(Extract(archive, dest, "", false, summary, error) == Status::PasswordRequired);
+            CHECK(Extract(archive, dest, "wrong", false, summary, error) == Status::WrongPassword);
+
+            const Status status = Extract(archive, dest, "Seven-Zip-Pass", false, summary, error);
+            if (status != Status::Success)
+            {
+                std::printf("  7-Zip %S archive: %s\n", method, error.c_str());
+            }
+
+            CHECK(status == Status::Success);
+            CHECK(ReadFile(dest + "\\top.txt") == "top level");
+            CHECK(ReadFile(dest + "\\inner\\deep.bin") == Pseudorandom(50000, 41));
+        }
+
+        RemoveTree(dir);
+    }
+
     struct Test
     {
         const char* name;
@@ -898,12 +1375,22 @@ int main()
         { "LockedFileReported", LockedFileReported },
         { "ProgressReportedAndCancelKeepsOldFile", ProgressReportedAndCancelKeepsOldFile },
         { "SevenZipCanOpen", SevenZipCanOpen },
+        { "ZipCryptoLegacyOption", ZipCryptoLegacyOption },
         { "TarFormatsRoundTrip", TarFormatsRoundTrip },
         { "TarExeCapabilityProbe", TarExeCapabilityProbe },
         { "TarRulesMatchZip", TarRulesMatchZip },
         { "TarCancelKeepsOldFile", TarCancelKeepsOldFile },
         { "FormatDetection", FormatDetection },
         { "ListArchiveWorks", ListArchiveWorks },
+        { "ExtractRoundTripAllFormats", ExtractRoundTripAllFormats },
+        { "ExtractZipPasswords", ExtractZipPasswords },
+        { "ExtractRefusesUnsafeEntries", ExtractRefusesUnsafeEntries },
+        { "ExtractSkipsLinks", ExtractSkipsLinks },
+        { "ExtractFoldersFromOtherTools", ExtractFoldersFromOtherTools },
+        { "ExtractExistingFiles", ExtractExistingFiles },
+        { "ExtractCancelRollsBack", ExtractCancelRollsBack },
+        { "ExtractBadInputs", ExtractBadInputs },
+        { "ExtractSevenZipArchives", ExtractSevenZipArchives },
     };
 
     std::printf("libzip %s, %s\n\n", zip_libzip_version(), archive_version_details());

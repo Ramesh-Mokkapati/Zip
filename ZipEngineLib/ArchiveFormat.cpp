@@ -174,12 +174,24 @@ namespace ZipEngine
         ProgressCallback progress,
         std::string& errorMessage)
     {
+        return CreateArchive(format, outputPath, filesToAdd, password, ZipEncryption::Aes256, progress, errorMessage);
+    }
+
+    Status CreateArchive(
+        ArchiveFormat format,
+        const std::string& outputPath,
+        const std::vector<std::string>& filesToAdd,
+        const std::string& password,
+        ZipEncryption encryption,
+        ProgressCallback progress,
+        std::string& errorMessage)
+    {
         errorMessage.clear();
 
         if (format == ArchiveFormat::Zip)
         {
             ZipCompressor zip;
-            const Status status = zip.CreateEncryptedZip(outputPath, filesToAdd, password, progress);
+            const Status status = zip.CreateEncryptedZip(outputPath, filesToAdd, password, progress, encryption);
             errorMessage = zip.GetLastErrorMessage();
             return status;
         }
@@ -210,7 +222,14 @@ namespace ZipEngine
             return Status::InvalidArgument;
         }
 
-        // Detect the container (zip/tar) and compression (gz/bz2/xz) from the data itself.
+        // ZIP: read the central directory with libzip, the same reader ExtractArchive uses
+        // (libarchive's streaming ZIP reader can stumble over encrypted entries).
+        if (detail::IsZipFile(wide))
+        {
+            return detail::ListZip(archivePath, entries, errorMessage);
+        }
+
+        // TAR: detect the compression (gz/bz2/xz) from the data itself.
         std::unique_ptr<archive, ArchiveReadDeleter> a(archive_read_new());
         archive_read_support_filter_all(a.get());
         archive_read_support_format_zip(a.get());
